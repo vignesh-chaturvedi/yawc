@@ -1,8 +1,8 @@
 # Diagnostic only, on the fork's diag/autobahn-memory branch; never part of a PR.
 #
-# Runs the Linux job of tests.yaml unchanged, three copies in parallel to catch the
-# intermittent kill of wstest in the Autobahn server suite, and records memory every
-# 5 seconds plus the kernel's and systemd-oomd's view of any kill.
+# Runs the Linux job of tests.yaml unchanged, four copies with PyPy's default nursery
+# and four with PYPY_GC_NURSERY=4M for wstest, recording the CPU, memory every
+# 5 seconds, and the kernel's and systemd-oomd's view of any kill.
 name: Autobahn memory
 
 on:
@@ -14,12 +14,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        copy: [1, 2, 3]
+        nursery: [default, 4M]
+        copy: [1, 2, 3, 4]
     runs-on: ubuntu-latest
+    env:
+      # Passed to wstest by the Autobahn scripts; empty leaves PyPy's own choice.
+      PYPY_GC_NURSERY: ${{ matrix.nursery != 'default' && matrix.nursery || '' }}
 
     steps:
       - name: System
         run: |
+          grep -m1 'model name' /proc/cpuinfo
+          grep -m1 'cache size' /proc/cpuinfo
+          echo "PYPY_GC_NURSERY=[$PYPY_GC_NURSERY]"
           nproc
           free -m
           swapon --show
@@ -36,7 +43,7 @@ jobs:
             echo "== $(date -u +%T)"
             free -m | sed -n 2,3p
             df -m /dev/shm | sed -n 2p
-            ps -eo pid,rss,oom_score_adj,comm --sort=-rss | sed -n 2,6p
+            ps -eo pid,rss,comm --sort=-rss | sed -n 2,6p
             sleep 5
           done' > /tmp/memory.log 2>&1 &
       - uses: actions/checkout@v3
@@ -91,7 +98,8 @@ jobs:
         run: |
           cat /tmp/memory.log
           echo "== kernel"
-          sudo dmesg -T | grep -iE 'oom|killed process|out of memory' || true
+          sudo dmesg -T | grep -A400 'invoked oom-killer' \
+            | grep -E 'invoked oom|\[  pid  \]|\] \[ *[0-9]+\]|Killed process' || true
           echo "== systemd-oomd"
           journalctl -u systemd-oomd --no-pager | tail -n 50 || true
           cat /proc/pressure/memory || true

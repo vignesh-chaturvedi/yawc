@@ -77,6 +77,7 @@ if (await containerExists(CONTAINER_NAME)) {
     `-v ${pwd}/fuzzingclient.json:/fuzzingclient.json:ro`,
     `-v ${pwd}/reports:/reports`,
     `-p 9002:9002`,
+    "-e PYPY_GC_NURSERY",
     networkArgs,
     "--rm",
     AUTOBAHN_TESTSUITE_DOCKER,

@@ -53,6 +53,7 @@ try {
     await $`docker run --detach --name ${CONTAINER_NAME} \
       -v ${pwd}/fuzzingserver.json:/fuzzingserver.json:ro \
       -v ${pwd}/reports:/reports \
+      -e PYPY_GC_NURSERY \
       -p 9001:9001 \
       --rm ${AUTOBAHN_TESTSUITE_DOCKER} \
       wstest -m fuzzingserver -s fuzzingserver.json`;
