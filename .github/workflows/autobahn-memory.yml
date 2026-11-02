@@ -1,8 +1,8 @@
 # Diagnostic only, on the fork's diag/autobahn-memory branch; never part of a PR.
 #
-# Runs the Linux job of tests.yaml unchanged, four copies with PyPy's default nursery
-# and four with PYPY_GC_NURSERY=4M for wstest, recording the CPU, memory every
-# 5 seconds, and the kernel's and systemd-oomd's view of any kill.
+# Runs CI's two Autobahn steps with wstest's PyPy nursery forced to the sizes Intel
+# runners pick on their own (half the L3 that /proc/cpuinfo reports), recording the
+# CPU, memory every 5 seconds, and the kernel's view of any kill.
 name: Autobahn memory
 
 on:
@@ -14,8 +14,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        nursery: [default, 4M]
-        copy: [1, 2, 3, 4]
+        nursery: [18M, 24M]
+        copy: [1, 2, 3]
     runs-on: ubuntu-latest
     env:
       # Passed to wstest by the Autobahn scripts; empty leaves PyPy's own choice.
@@ -55,41 +55,12 @@ jobs:
       - uses: denoland/setup-deno@v1
         with:
           deno-version: v2.x
-      - uses: actions/setup-node@v6
-        with:
-          node-version: lts/*
-      - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-      - name: Build
-        run: cargo build --verbose --all-features --all-targets
-      - name: Test
-        run: cargo test --verbose
-      - name: Test zlib
-        run: cargo test --verbose --features zlib
-      - name: Test axum
-        run: cargo test --verbose --features axum,zlib
-      - name: Test http2
-        run: cargo test --verbose --features http2,axum
-      - name: Test without TLS
-        run: cargo test --verbose --no-default-features --features axum,http2,reqwest
-      - name: Test custom TLS
-        run: cargo test --verbose --no-default-features --features tls,axum,http2
-      - name: Check isolated TLS features
-        run: |
-          cargo check --lib --no-default-features --features axum,http2,reqwest
-          cargo check --lib --no-default-features --features tls
-          cargo check --lib --no-default-features --features rustls-aws-lc-rs
-      - name: Test WASM
-        run: |
-          rustup target add wasm32-unknown-unknown
-          cargo check --lib --target wasm32-unknown-unknown --no-default-features
-          env WASM_BINDGEN_USE_BROWSER=1 wasm-pack test --headless --chrome --lib
-          wasm-pack test --node --lib
       - name: Autobahn|Testsuite client (with zlib)
         timeout-minutes: 20
         run: |
           deno run -A --unstable autobahn/client-test.js zlib
       - name: Autobahn|Testsuite server (with zlib)
+        if: success() || failure()
         timeout-minutes: 40
         run: |
           deno run -A --unstable autobahn/server-test.js zlib
