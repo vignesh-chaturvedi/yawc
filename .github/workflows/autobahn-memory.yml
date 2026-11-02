@@ -1,15 +1,44 @@
-name: Tests
+# Diagnostic only, on the fork's diag/autobahn-memory branch; never part of a PR.
+#
+# Runs the Linux job of tests.yaml unchanged, three copies in parallel to catch the
+# intermittent kill of wstest in the Autobahn server suite, and records memory every
+# 5 seconds plus the kernel's and systemd-oomd's view of any kill.
+name: Autobahn memory
 
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches: [diag/autobahn-memory]
 
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+        copy: [1, 2, 3]
+    runs-on: ubuntu-latest
 
     steps:
+      - name: System
+        run: |
+          nproc
+          free -m
+          swapon --show
+          df -h /dev/shm
+          uname -r
+          echo "step oom_score_adj: $(cat /proc/self/oom_score_adj)"
+          systemctl is-active systemd-oomd || true
+          systemctl show docker.service -p MemoryMax || true
+          cat /sys/fs/cgroup/system.slice/memory.max 2>/dev/null || true
+          cat /proc/pressure/memory || true
+      - name: Sample memory
+        run: |
+          nohup bash -c 'while true; do
+            echo "== $(date -u +%T)"
+            free -m | sed -n 2,3p
+            df -m /dev/shm | sed -n 2p
+            ps -eo pid,rss,oom_score_adj,comm --sort=-rss | sed -n 2,6p
+            sleep 5
+          done' > /tmp/memory.log 2>&1 &
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
@@ -31,11 +60,8 @@ jobs:
       - name: Test zlib
         run: cargo test --verbose --features zlib
       - name: Test axum
-        # Without http2, so the axum extractor is covered in the same shape the autobahn
-        # suite builds it: extended CONNECT compiled out.
         run: cargo test --verbose --features axum,zlib
       - name: Test http2
-        # axum comes along because the RFC 8441 extractor test needs both features.
         run: cargo test --verbose --features http2,axum
       - name: Test without TLS
         run: cargo test --verbose --no-default-features --features axum,http2,reqwest
@@ -46,34 +72,26 @@ jobs:
           cargo check --lib --no-default-features --features axum,http2,reqwest
           cargo check --lib --no-default-features --features tls
           cargo check --lib --no-default-features --features rustls-aws-lc-rs
-      - name: Check server dependencies
-        shell: bash
-        run: |
-          cargo tree --no-default-features --features axum -e normal --prefix none > dependencies.txt
-          if grep -Eq '^(tokio-rustls|rustls|rustls-webpki|webpki-roots) v' dependencies.txt; then
-            echo "Server-only builds must not depend on TLS crates"
-            exit 1
-          fi
       - name: Test WASM
         run: |
           rustup target add wasm32-unknown-unknown
           cargo check --lib --target wasm32-unknown-unknown --no-default-features
           env WASM_BINDGEN_USE_BROWSER=1 wasm-pack test --headless --chrome --lib
           wasm-pack test --node --lib
-      - name: Check formatting
-        run: cargo fmt -- --check --verbose
       - name: Autobahn|Testsuite client (with zlib)
-        if: matrix.os == 'ubuntu-latest'
-        # A suite that hangs never finishes its step, and GitHub serves no log for a
-        # step still in progress, so an uncapped hang costs the job's whole hour and
-        # leaves nothing to read. The cap fails it while the log is still retrievable.
         timeout-minutes: 20
         run: |
           deno run -A --unstable autobahn/client-test.js zlib
       - name: Autobahn|Testsuite server (with zlib)
-        if: matrix.os == 'ubuntu-latest'
-        # The full server suite can still be progressing after 20 minutes on
-        # slower runners. Allow headroom while keeping hangs bounded.
         timeout-minutes: 40
         run: |
           deno run -A --unstable autobahn/server-test.js zlib
+      - name: Memory log
+        if: always()
+        run: |
+          cat /tmp/memory.log
+          echo "== kernel"
+          sudo dmesg -T | grep -iE 'oom|killed process|out of memory' || true
+          echo "== systemd-oomd"
+          journalctl -u systemd-oomd --no-pager | tail -n 50 || true
+          cat /proc/pressure/memory || true
